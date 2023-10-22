@@ -1,21 +1,13 @@
 #include <SPI.h>
-#include <dataTypes.h>
 #include <vector>
-//#include <GPRS.h>
+#include <GPRS.h>
 #include <esp_now.h>
 #include <WiFi.h>
-#include<deque>
+#include <myRtc.h>
+#include <dataTypes.h>
+#include <auxilaryTest.h>
 
-#define RAM_CHECK  ; RAM_Check(__func__, uxTaskGetStackHighWaterMark(NULL))
-#define TASK_CREATED Serial.printf("%s created\n", __func__);
-
-void RAM_Check(const char* name, size_t bytes)
-{  
-  Serial.printf("Task \"%s\" RAM Usage: %u bytes\n", name, bytes);
-  size_t freeHeapSize = esp_get_free_heap_size();
-  Serial.printf("Free Heap Size: %u bytes\n", freeHeapSize);
-  Serial.println();
-}
+// #######################################################
 // ############################## ESP NOW #################
 uint8_t slaveAddress[] = {0x30, 0xC6, 0xF7, 0x04, 0x64, 0x2C};
 esp_now_peer_info_t peerInfo;
@@ -24,6 +16,10 @@ typedef struct request_t {
  const char request[4] = "GET";
 }RequestMsg;
 
+#define BUFFER_SIZE 5000
+#define TASK_CREATED Serial.printf("%s created\n", __func__);
+
+// #######################################################
 void registerPeer()
 {
   memcpy(peerInfo.peer_addr, slaveAddress, 6);
@@ -37,26 +33,7 @@ void registerPeer()
   }
 }
 
-dateTime_t fakeTimeStamp()
-{
-  static int cnt = 0;
-  dateTime_t temp;  
-  snprintf(temp.time, 25, "%d:%d:%d", cnt++, cnt + 1, cnt + 2);  
-  snprintf(temp.date, 25, "%d:%d:%d", cnt * 2 , cnt * 2 + 1, cnt * 10);
-  return temp;
-}
-
-QueueHandle_t measurementsQueue;
-QueueHandle_t stringQueue;
-// ########################################################
-
-uint64_t getEspTimeinMs(){return esp_timer_get_time() / 1000;};
-
 String generateJsonRow(Measurements_t& data);
-
-TaskHandle_t requestTaskHandler = NULL;
-TaskHandle_t sendTaskHandler = NULL;
-TaskHandle_t serializeTaskHandler = NULL;
 
 void listSerialize(const std::vector<String>& tempList, char* buffer)
 {
@@ -70,7 +47,13 @@ void listSerialize(const std::vector<String>& tempList, char* buffer)
   RAM_CHECK; 
 }
 
-// ######################################################################## TASK #########################
+// ######################################################################## TASKS #########################
+QueueHandle_t measurementsQueue;
+QueueHandle_t stringQueue;
+
+TaskHandle_t requestTaskHandler = NULL;
+TaskHandle_t sendTaskHandler = NULL;
+TaskHandle_t serializeTaskHandler = NULL;
 
 esp_err_t sendRequest(const uint8_t* adress)
 {
@@ -81,7 +64,6 @@ esp_err_t sendRequest(const uint8_t* adress)
 void requestTask(void *parameters)
 {
    TASK_CREATED;
-  // loop
   while (true)
   {
     esp_err_t result = ESP_FAIL;
@@ -96,10 +78,13 @@ void requestTask(void *parameters)
   vTaskDelete(NULL);
 }
 
+
 void onDataReceived(const uint8_t *mac, const uint8_t *data, int len)
 {
-  Measurements_t measurements;  
-  memcpy(&measurements._dataRecived, data, sizeof(data));
+  DataRecived dataRecived;
+  memcpy(&dataRecived, data, sizeof(dataRecived));
+  Measurements_t measurements;
+  measurements._dataRecived = dataRecived;
   measurements._timeStamp = fakeTimeStamp();
 
   // five attepts
@@ -112,7 +97,7 @@ void serializeTask(void *parameter)
   std::vector<String> tempList;
   tempList.reserve(30);
   TASK_CREATED;
-  char buffer[5000];
+  char buffer[BUFFER_SIZE];
   while(true)  {    
     Measurements_t measurements;
     if (xQueueReceive(measurementsQueue, &measurements, portMAX_DELAY) == pdTRUE){
@@ -132,64 +117,55 @@ void serializeTask(void *parameter)
   vTaskDelete(NULL);
 }
 
-// void sendTask(void *parameters)
-// {
-//   SIM800L *sim800l = new SIM800L((Stream *)&SerialAT, SIM800_RST_PIN, 15000, 15000);
-//   setupSim800Module(sim800l);
-//   globalTimer = getEspTimeinMs();
-//   Serial.println("SEND TASK CREATED");
-
-//   while (true)
-//   {  
-//     String buffer;
-//     if(xQueuePeek(stringQueue, &buffer, portMAX_DELAY) == pdTRUE){
-//       bool success = false;
-//       for (int i = 0; i < 30; i++){
-//         success = postToHTTP(buffer.c_str(), sim800l);
-//         if (success){
-//           xQueueReceive(stringQueue, &buffer, portMAX_DELAY);
-//           break;
-//         }
-//         else          vTaskDelay(pdMS_TO_TICKS(100));
-//       }
-//       if(!success) Serial.println("Failed to post after 30 retries");
-//     }
-//   }
-//   delete sim800l;
-//   vTaskDelete(NULL);
-// }
-
-bool FakePost(const char* buffer)
-{
-  vTaskDelay(pdMS_TO_TICKS(2000));
-  static bool result = true;
-  result = !result;
-  return result;
-}
 void sendTask(void *parameters)
 {
+  SIM800L *sim800l = new SIM800L((Stream *)&SerialAT, SIM800_RST_PIN, 15000, 15000);
+  setupSim800Module(sim800l);
   TASK_CREATED;
-  char buffer[5000];
+  char buffer[BUFFER_SIZE];
   while (true)
   {  
-   if(xQueuePeek(stringQueue, buffer, pdMS_TO_TICKS(10))){
-      bool success = false;      
-        while (!success){
-         success = FakePost(buffer);
-         if (success){         
-            xQueueReceive(stringQueue, buffer, pdMS_TO_TICKS(10));
-            RAM_CHECK;     
-            strcpy(buffer, "");
-            break;
-         }
-         vTaskDelay(pdMS_TO_TICKS(100));
+    if(xQueuePeek(stringQueue, &buffer, portMAX_DELAY) == pdTRUE){
+      bool success = false;
+      for (int i = 0; i < 30; i++){
+        success = postToHTTP(buffer, sim800l);
+        if (success){
+          xQueueReceive(stringQueue, &buffer, portMAX_DELAY);
+          break;
         }
+        else          vTaskDelay(pdMS_TO_TICKS(100));
       }
-      vTaskDelay(pdMS_TO_TICKS(1000));  
-   }
-  Serial.println("SEND TASK DELETED");
+      if(!success) Serial.println("Failed to post after 30 retries");
+    }
+  }
+  delete sim800l;
   vTaskDelete(NULL);
 }
+
+// void sendTask(void *parameters)
+// {
+//   TASK_CREATED;
+//   char buffer[BUFFER_SIZE];
+//   while (true)
+//   {     
+//    if(xQueuePeek(stringQueue, buffer, pdMS_TO_TICKS(10))){
+//       bool success = false;      
+//         while (!success){
+//          success = FakePost(buffer);
+//          if (success){         
+//             xQueueReceive(stringQueue, buffer, pdMS_TO_TICKS(10));
+//             RAM_CHECK;     
+//             strcpy(buffer, "");
+//             break;
+//          }
+//          vTaskDelay(pdMS_TO_TICKS(100));
+//         }
+//       }
+//       vTaskDelay(pdMS_TO_TICKS(1000));  
+//    }
+//   Serial.println("SEND TASK DELETED");
+//   vTaskDelete(NULL);
+// }
 inline void createTasks()
 {
   xTaskCreate(requestTask, "requestTask", 2048, NULL, 0, &requestTaskHandler);
@@ -208,6 +184,7 @@ void setup()
     Serial.println("Error initializing ESP-NOW");
     return;
   }
+  
   Serial.println("Master..");
   //myRtc::setupRtc();
 
@@ -226,7 +203,7 @@ inline bool sendTaskIsValid() { return sendTaskHandler != NULL;}
 
 void loop()
 {  
-  // if there are no send in 2 min, reset tasks
+  
 }
 
 String generateJsonRow(Measurements_t& measuremets)
