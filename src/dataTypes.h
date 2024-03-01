@@ -2,7 +2,6 @@
 #define DATATYPES_H
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <myRtc.h>
 
 struct DataRecived
 {
@@ -20,11 +19,34 @@ struct DataRecived
     }
 };
 
-struct Measurements_t{
-    DataRecived _dataRecived;
-    dateTime_t _timeStamp;
+struct dateTime_t
+{
+    char mDate[15];
+    char mTime[15];
 
-    void setCurrentTime(){return _timeStamp.getDateTime();}
+    dateTime_t()
+    {
+        strcpy(mDate, "");
+        strcpy(mTime, "");
+    }
+
+    dateTime_t(const char* date, const char* time)
+    {
+        strcpy(mDate, date);
+        strcpy(mTime, time);
+    }
+
+};
+
+struct Measurements_t
+{
+    DataRecived _dataRecived;
+    dateTime_t _timeStamp;  
+    Measurements_t()
+    {
+        _dataRecived = DataRecived();
+        _timeStamp = dateTime_t();
+    }      
 };
 
 struct messageBuffer_t{

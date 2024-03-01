@@ -13,17 +13,18 @@ const char simPIN[] = "";
 const char host[] = "script.google.com";
 const int httpsPort = 443;
 
-const char URL[] = "https://script.google.com/macros/s/AKfycbzcB-bW-0ZyAyY-vp15G9mfbpEqptq8N_CFhpwUtAwjecaLpBmfMxEHxmz_miOh21WY/exec";
+const char URL[] = "https://script.google.com/macros/s/AKfycbwKfR_3T9TXgYx1LeMZBh9GqtRyfpmr1doqwyx-euHSev9jc3AszeuXjqISOZwYiKE2Xw/exec";
 //const char URL[] = "https://script.google.com/macros/s/AKfycbywjVaM4sKBQE6aNriiW22Cex8QdWup510h_YLwrYFS2mwzuXVVQ5ZHiooxhHZKOVWn8g/exec"; // data test
 const char CONTENT_TYPE[] = "application/json";
 
-// TTGO T-Call pins
-#define MODEM_RST 5
 
 // Set serial for debug console (to Serial Monitor, default speed 115200)
-#define SerialMon Serial
+#define SerialMon Serial1
 // Set serial for AT commands (to SIM800 module)
  #define SerialAT Serial2
+
+#define MODEM_TX 17
+#define MODEM_RX 16
 
 // Configure TinyGSM library
 #define TINY_GSM_MODEM_SIM800   // Modem is SIM800

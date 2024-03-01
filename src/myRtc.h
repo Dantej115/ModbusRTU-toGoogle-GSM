@@ -1,121 +1,72 @@
 #ifndef MYRTC_H
 #define MYRTC_H
+
 #include <Wire.h>
-#include <ThreeWire.h>  
-#include <RtcDS1302.h>
+#include <SPI.h>
+#include "RTClib.h"
+#include "dataTypes.h"
 
-#define I2C_SDA 21
-#define I2C_SCL 22
-#define RTC_RST 27
+#define SDA_PIN 27
+#define SCL_PIN 25
 #define countof(a) (sizeof(a) / sizeof(a[0]))
-
- ThreeWire myWire(I2C_SDA, I2C_SCL, RTC_RST); // IO, SCLK, CE
- RtcDS1302<ThreeWire> Rtc(myWire);
-
-struct dateTime_t
+namespace RTC
 {
-    char date[25];
-    char time[25];
+    static RTC_DS3231  Rtc;
+    dateTime_t getDateTime();
+    static DateTime lastValid;
 
-    // dateTime_t()
-    // {
-    //     getDateTime();
-    // }
-
-    static void printDateTime(const RtcDateTime &dt)
+    void setupRTC()
     {
-        char datestring[20];
+        Wire.begin(SDA_PIN, SCL_PIN);
+        if (!Rtc.begin())
+        {
+            SerialMon.println("Couldn't find RTC");
+            SerialMon.flush();
+            while (1)
+                delay(10);
+        }
 
-        snprintf_P(datestring,
-                   countof(datestring),
-                   PSTR("%02u/%02u/%04u %02u:%02u:%02u"),
-                   dt.Month(),
-                   dt.Day(),
-                   dt.Year(),
-                   dt.Hour(),
-                   dt.Minute(),
-                   dt.Second());
-        Serial.print(datestring);
+        if (Rtc.lostPower())
+        {
+            SerialMon.println("RTC lost power, let's set the time!");
+            Rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+        }
     }
 
-    void getDateTime()
-    {
-        RtcDateTime now = Rtc.GetDateTime();
-        if (!now.IsValid())
+    dateTime_t getDateTime()
+    {        
+        DateTime now = Rtc.now();        
+        for (size_t i = 0; i < 5; i++)
         {
-            // Common Causes:
-            //    1) the battery on the device is low or even missing and the power line was disconnected
-            Serial.println("RTC lost confidence in the DateTime!");
+            if(now.isValid())
+                break;
+            now = Rtc.now();
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
+        
+        char date[15];
+        char time[15];
+
         snprintf_P(date,
                    countof(date),
-                   PSTR("%02u/%02u/%04u"),
-                   now.Month(),
-                   now.Day(),
-                   now.Year());
+                   PSTR("%04u/%02u/%02u"),
+                   now.year(),
+                   now.month(),
+                   now.day());
 
         snprintf_P(time,
                    countof(time),
                    PSTR("%02u:%02u:%02u"),
-                   now.Hour(),
-                   now.Minute(),
-                   now.Second());
-    }
-};
-
-
-namespace myRtc
-{
-    void setupRtc()
-    {
-        Wire.begin(I2C_SDA, I2C_SCL);
-        Serial.print("compiled: ");
-        Serial.print(__DATE__);
-        Serial.println(__TIME__);
-
-        Rtc.Begin();
-        RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
-        dateTime_t::printDateTime(compiled);
-        Serial.println();
-
-        if (!Rtc.IsDateTimeValid())
+                   now.hour(),
+                   now.minute(),
+                   now.second());
+        
+        if(now.isValid()) lastValid = now;
+        else 
         {
-            // Common Causes:
-            //    1) first time you ran and the device wasn't running yet
-            //    2) the battery on the device is low or even missing
-
-            Serial.println("RTC lost confidence in the DateTime!");
-            Rtc.SetDateTime(compiled);
-            RtcDateTime firstTime(__DATE__, __TIME__);
-            Rtc.SetDateTime(firstTime);
+            if(lastValid.isValid()) Rtc.adjust(lastValid);
         }
-
-        if (Rtc.GetIsWriteProtected())
-        {
-            Serial.println("RTC was write protected, enabling writing now");
-            Rtc.SetIsWriteProtected(false);
-        }
-
-        if (!Rtc.GetIsRunning())
-        {
-            Serial.println("RTC was not actively running, starting now");
-            Rtc.SetIsRunning(true);
-        }
-
-        RtcDateTime now = Rtc.GetDateTime();
-        if (now < compiled)
-        {
-            Serial.println("RTC is older than compile time!  (Updating DateTime)");
-            Rtc.SetDateTime(compiled);
-        }
-        else if (now > compiled)
-        {
-            Serial.println("RTC is newer than compile time. (this is expected)");
-        }
-        else if (now == compiled)
-        {
-            Serial.println("RTC is the same as compile time! (not expected but all is fine)");
-        }
+        return dateTime_t(date, time);
     }
 }
 

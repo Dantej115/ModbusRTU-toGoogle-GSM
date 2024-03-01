@@ -1,52 +1,18 @@
 #include <SPI.h>
 #include <vector>
 #include <GPRS.h>
-#include <esp_now.h>
-#include <WiFi.h>
 #include <myRtc.h>
 #include <dataTypes.h>
 #include <auxilaryTest.h>
-
-// #######################################################
-// ############################## ESP NOW #################
-uint8_t slaveAddress[] = {0x30, 0xC6, 0xF7, 0x04, 0x64, 0x2C};
-esp_now_peer_info_t peerInfo;
-
-typedef struct request_t {
- const char request[4] = "GET";
-}RequestMsg;
+#include <myRTU.h>
 
 #define BUFFER_SIZE 5000
-#define TASK_CREATED Serial.printf("%s created\n", __func__);
-
-// #######################################################
-void registerPeer()
-{
-  memcpy(peerInfo.peer_addr, slaveAddress, 6);
-  peerInfo.channel = 0;  
-  peerInfo.encrypt = false;
-
-    // Add peer        
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer");
-    return;    
-  }
-}
+#define TASK_CREATED SerialMon.printf("%s created\n", __func__);
 
 String generateJsonRow(Measurements_t& data);
+void listSerialize(const std::vector<String>& tempList, char* buffer);
 
-void listSerialize(const std::vector<String>& tempList, char* buffer)
-{
-  strcpy(buffer, "[");
-  for(auto& vec : tempList)
-  {
-   strcat(buffer, vec.c_str());
-   if(&vec != &tempList.back())   strcat(buffer, ","); // add coma only when its not last element
-  }
-  strcat(buffer, "]");
-  RAM_CHECK; 
-}
-
+ModbusMaster node;
 // ######################################################################## TASKS #########################
 QueueHandle_t measurementsQueue;
 QueueHandle_t stringQueue;
@@ -54,43 +20,28 @@ QueueHandle_t stringQueue;
 TaskHandle_t requestTaskHandler = NULL;
 TaskHandle_t sendTaskHandler = NULL;
 TaskHandle_t serializeTaskHandler = NULL;
+TaskHandle_t fAnemometerHandler = NULL;
 
-esp_err_t sendRequest(const uint8_t* adress)
+void readTask(void *parameters)
 {
-  const RequestMsg request;
-  return esp_now_send(adress, (uint8_t *)&request, sizeof(request));
-}
+  TASK_CREATED;
 
-void requestTask(void *parameters)
-{
-   TASK_CREATED;
   while (true)
   {
-    esp_err_t result = ESP_FAIL;
-    uint8_t counter = 0;
-    while (result != ESP_OK)    {      
-      result = sendRequest(slaveAddress);
-      counter++;
-      if(counter > 5) break;
+    Measurements_t measurements;
+    modbusLine::modbusRead(measurements._dataRecived, node);
+    measurements._dataRecived.windCnt = anemometer::getWindCounter();
+    measurements._timeStamp = RTC::getDateTime();
+
+    // five attepts
+    for (uint8_t cnt = 0; cnt < 5; cnt++)
+    {
+      if (xQueueSend(measurementsQueue, &measurements, pdMS_TO_TICKS(10)) == pdTRUE)
+        break;
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
   vTaskDelete(NULL);
-}
-
-
-void onDataReceived(const uint8_t *mac, const uint8_t *data, int len)
-{
-  DataRecived dataRecived;
-  memcpy(&dataRecived, data, sizeof(dataRecived));
-  Measurements_t measurements;
-  measurements._dataRecived = dataRecived;
-  measurements._timeStamp = fakeTimeStamp();
-
-  // five attepts
-  for (uint8_t cnt = 0; cnt < 5; cnt++)  {
-    if(xQueueSend(measurementsQueue, &measurements, pdMS_TO_TICKS(50)) == pdTRUE) break;
-  }
 }
 void serializeTask(void *parameter)
 {
@@ -105,8 +56,9 @@ void serializeTask(void *parameter)
 
       if (tempList.size() == 30){
         listSerialize(tempList, buffer);
+        SerialMon.println("Serialize complete");
         if (xQueueSend(stringQueue, buffer, portMAX_DELAY) == pdTRUE){
-          RAM_CHECK;
+          SerialMon.println("Serialize send");
           tempList.clear();
           strcpy(buffer, "");
         }
@@ -119,6 +71,7 @@ void serializeTask(void *parameter)
 
 void sendTask(void *parameters)
 {
+  SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   SIM800L *sim800l = new SIM800L((Stream *)&SerialAT, SIM800_RST_PIN, 15000, 15000);
   setupSim800Module(sim800l);
   TASK_CREATED;
@@ -135,75 +88,51 @@ void sendTask(void *parameters)
         }
         else          vTaskDelay(pdMS_TO_TICKS(100));
       }
-      if(!success) Serial.println("Failed to post after 30 retries");
+      if(!success) 
+      {
+        SerialMon.println("Failed to post after 30 retries");
+        sim800l->reset();
+        setupSim800Module(sim800l);
+      }
     }
   }
   delete sim800l;
   vTaskDelete(NULL);
 }
 
-// void sendTask(void *parameters)
-// {
-//   TASK_CREATED;
-//   char buffer[BUFFER_SIZE];
-//   while (true)
-//   {     
-//    if(xQueuePeek(stringQueue, buffer, pdMS_TO_TICKS(10))){
-//       bool success = false;      
-//         while (!success){
-//          success = FakePost(buffer);
-//          if (success){         
-//             xQueueReceive(stringQueue, buffer, pdMS_TO_TICKS(10));
-//             RAM_CHECK;     
-//             strcpy(buffer, "");
-//             break;
-//          }
-//          vTaskDelay(pdMS_TO_TICKS(100));
-//         }
-//       }
-//       vTaskDelay(pdMS_TO_TICKS(1000));  
-//    }
-//   Serial.println("SEND TASK DELETED");
-//   vTaskDelete(NULL);
-// }
 inline void createTasks()
 {
-  xTaskCreate(requestTask, "requestTask", 2048, NULL, 0, &requestTaskHandler);
-  xTaskCreate(serializeTask, "serializeTask", 8192, NULL, 0, &serializeTaskHandler);
-  xTaskCreate(sendTask, "sendTask", 8192, NULL, 0, &sendTaskHandler);
+  xTaskCreate(readTask, "readTask", 2 *8192, NULL, 3, &requestTaskHandler);
+  xTaskCreate(serializeTask, "serializeTask", 2 *8192, NULL, 1, &serializeTaskHandler);
+  xTaskCreate(sendTask, "sendTask", 2 *8192, NULL, 0, &sendTaskHandler);
 }
 
 // #######################################################################################################
 void setup()
 {
-  Serial.begin(115200);
-  //SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
-  WiFi.mode(WIFI_STA);
-    if (esp_now_init() != ESP_OK)
-  {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
+  SerialMon.begin(115200, SERIAL_8N1, RX, TX);
   
-  Serial.println("Master..");
-  //myRtc::setupRtc();
+  SerialMon.println("Master..");
+
+  RTC::setupRTC();
+  SerialMon.println("Modbus setup"); 
+  modbusLine::setupModbus(node); 
+  SerialMon.println("Modbus started"); 
+  
+  anemometer::anemometer_Setup(&fAnemometerHandler);  
+  SerialMon.println("anemometer started");
+  SerialMon.println("Done");
 
   measurementsQueue = xQueueCreate(60, sizeof(Measurements_t));
   stringQueue = xQueueCreate(4, sizeof(messageBuffer_t));
 
-  esp_now_register_recv_cb(onDataReceived);
-  registerPeer();
   createTasks();
 
 }
 
-//=============
-inline bool readTaskIsValid() { return requestTaskHandler != NULL;}
-inline bool sendTaskIsValid() { return sendTaskHandler != NULL;}
-
 void loop()
 {  
-  
+  vTaskDelete(NULL);
 }
 
 String generateJsonRow(Measurements_t& measuremets)
@@ -216,8 +145,8 @@ String generateJsonRow(Measurements_t& measuremets)
   StaticJsonDocument<192> doc;
 
   JsonObject dateTime = doc.createNestedObject("dateTime");
-  dateTime["date"] = timeNow->date;
-  dateTime["time"] = timeNow->time;
+  dateTime["date"] = timeNow->mDate;
+  dateTime["time"] = timeNow->mTime;
 
   JsonObject Anemometer = doc.createNestedObject("Anemometer");
   Anemometer["Speed"] =  data->windCnt;  
@@ -230,4 +159,15 @@ String generateJsonRow(Measurements_t& measuremets)
   serializeJson(doc, buffer);
 
   return buffer;
+}
+void listSerialize(const std::vector<String>& tempList, char* buffer)
+{
+  strcpy(buffer, "[");
+  for(auto& vec : tempList)
+  {
+   strcat(buffer, vec.c_str());
+   if(&vec != &tempList.back())   strcat(buffer, ","); // add coma only when its not last element
+  }
+  strcat(buffer, "]");
+  //RAM_CHECK; 
 }
